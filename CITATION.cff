@@ -1,0 +1,36 @@
+cff-version: 1.2.0
+message: "If you use MHDETrees.jl, please cite the accompanying paper and this software."
+title: "MHDETrees.jl"
+type: software
+version: 1.0.0
+license: MIT
+repository-code: "https://github.com/YankaiGroup/MHDETrees.jl"
+authors:
+  - family-names: Ren
+    given-names: Jiayang
+  - family-names: Osuna-Enciso
+    given-names: Valentín
+  - family-names: Cao
+    given-names: Yankai
+keywords:
+  - decision tree
+  - classification
+  - scalability
+  - optimization
+  - GPU
+preferred-citation:
+  type: article
+  title: "A Moving-Horizon Differential Evolution Algorithm for Training Deep Classification Trees on Large Datasets"
+  authors:
+    - family-names: Ren
+      given-names: Jiayang
+    - family-names: Osuna-Enciso
+      given-names: Valentín
+    - family-names: Cao
+      given-names: Yankai
+  journal: "Expert Systems with Applications"
+  year: 2026
+  notes: "Article number 133846"
+  issn: "0957-4174"
+  doi: "10.1016/j.eswa.2026.133846"
+  url: "https://www.sciencedirect.com/science/article/pii/S0957417426027545"

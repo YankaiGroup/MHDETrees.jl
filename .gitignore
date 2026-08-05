@@ -1,0 +1,12 @@
+data/*
+!data/iris.csv
+data.7z
+.julia/
+.juliaup/
+Manifest.toml
+LocalPreferences.toml
+docs/build/
+revised_paper/
+reference/
+*.cov
+lcov.info
