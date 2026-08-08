@@ -1,42 +1,50 @@
 # MHDETrees.jl
 
-MHDETrees.jl implements Moving-Horizon Differential Evolution for Optimal
-Classification Trees (MH-DEOCT). It trains a deep classification tree through
-a sequence of smaller subtree optimization problems. Its discrete tree-decoding
-strategy searches data-derived feature and split choices, avoiding redundant
-continuous threshold searches. The package also provides full-tree DEOCT as a
-baseline, with CPU and NVIDIA GPU backends for both algorithms.
+[MHDETrees.jl](https://platform.juliahub.com/ui/Packages/General/MHDETrees) trains
+fixed-depth classification trees with differential evolution. It provides the
+Moving-Horizon Differential Evolution algorithm for Optimal Classification
+Trees (MH-DEOCT) and a full-tree DEOCT baseline. Both algorithms can train on a
+CPU or an NVIDIA GPU.
 
-| Algorithm | `backend=:cpu` | `backend=:gpu` |
-|---|---:|---:|
-| Full-tree DEOCT (`algorithm=:deoct`) | supported | supported |
-| Moving-horizon DEOCT (`algorithm=:mhdeoct`) | supported | supported |
+MH-DEOCT builds a deep tree through a sequence of smaller subtree optimization
+problems instead of optimizing the entire tree at once. Its discrete decoding
+maps evolutionary variables to features and data-derived split candidates, so
+equivalent continuous thresholds are not searched repeatedly. The result is a
+standard classification tree with inspectable split rules.
 
-For the algorithm, formulation, and computational experiments, see the paper
+For the formulation, algorithm, and computational experiments, see
 [*A Moving-Horizon Differential Evolution Algorithm for Training Deep
 Classification Trees on Large Datasets*](https://doi.org/10.1016/j.eswa.2026.133846).
 
 ## Installation
 
-MHDETrees.jl supports Julia 1.8 and later with CUDA.jl 4, 5, or 6. Install Julia
-with Juliaup and instantiate this checkout:
-
-```shell
-juliaup add 1.12
-julia +1.12 --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
-```
-
-After registration, installation will use:
+MHDETrees.jl supports Julia 1.8 and later. Install the registered package from
+the Julia General registry:
 
 ```julia
 using Pkg
 Pkg.add("MHDETrees")
 ```
 
-## Iris example
+Then load it with:
 
-MHDETrees.jl bundles the small Iris dataset, so the example has no external dataset
-dependency.
+```julia
+using MHDETrees
+```
+
+An NVIDIA GPU is not required to install or use MHDETrees.jl. CUDA.jl is an
+internal package dependency and is installed automatically, so users do not
+need to add or import CUDA.jl explicitly to use the GPU backend. On a computer
+without a functional NVIDIA CUDA device (including a Mac), the default
+`backend=:auto` uses the CPU. On a computer with a functional CUDA device, it
+uses the GPU. You can always select a backend explicitly with `backend=:cpu` or
+`backend=:gpu`.
+
+## Quick start
+
+The public API accepts a numeric feature matrix `X` with one sample per row and
+a label vector `y`. This example uses the bundled Iris dataset and explicitly
+selects CPU training:
 
 ```julia
 using MHDETrees
@@ -46,101 +54,125 @@ train = vcat(1:40, 51:90, 101:140)
 test = vcat(41:50, 91:100, 141:150)
 
 config = MHDEOCTConfig(
-    algorithm=:mhdeoct,  # or :deoct
-    backend=:cpu,        # or :gpu
+    algorithm=:mhdeoct,
+    backend=:cpu,
     depth=2,
     horizon=2,
-    population_size=10,
-    generations=2,
+    population_size=20,
+    generations=20,
+    seed=1,
+)
+
+model = fit(X[train, :], y[train]; config)
+y_pred = predict(model, X[test, :])
+score = accuracy(model, X[test, :], y[test])
+
+println(model)
+println("test accuracy = ", score)
+```
+
+Features are min-max scaled by default, and the fitted scaling parameters are
+stored in the model. Prediction uses the resulting tree on the CPU regardless
+of which backend was used for training.
+
+## Choosing the algorithm and backend
+
+| Configuration | Meaning |
+|---|---|
+| `algorithm=:mhdeoct` | Moving-horizon optimization; this is the default. |
+| `algorithm=:deoct` | Full-tree differential evolution. |
+| `backend=:auto` | Use CUDA when functional; otherwise use the CPU. This is the default. |
+| `backend=:cpu` | Force CPU training. |
+| `backend=:gpu` | Force NVIDIA GPU training; error if CUDA is unavailable. |
+
+All four explicit algorithm/backend combinations are supported:
+
+| Algorithm | CPU | NVIDIA GPU |
+|---|---:|---:|
+| Full-tree DEOCT (`algorithm=:deoct`) | yes | yes |
+| MH-DEOCT (`algorithm=:mhdeoct`) | yes | yes |
+
+`horizon` controls the optimized subtree depth for MH-DEOCT and is ignored by
+full-tree DEOCT. `population_size` and `generations` control the evolutionary
+search effort. The small values in the example are intended for a quick test;
+larger optimization budgets should generally be considered for real datasets.
+
+## NVIDIA GPU training
+
+The GPU backend requires a CUDA-capable NVIDIA GPU and a driver supported by
+CUDA.jl. CUDA.jl is installed automatically as an MHDETrees.jl dependency; it
+does not need to be added or imported explicitly for GPU training:
+
+```julia
+using MHDETrees
+
+gpu = gpu_available()
+println("gpu_available() = ", gpu)
+@assert gpu
+
+X, y = load_iris()
+train = vcat(1:40, 51:90, 101:140)
+test = vcat(41:50, 91:100, 141:150)
+
+config = MHDEOCTConfig(
+    algorithm=:mhdeoct,  # or :deoct
+    backend=:gpu,
+    depth=2,
+    horizon=2,
+    population_size=20,
+    generations=20,
     seed=1,
     verbose=false,
 )
 
 model = fit(X[train, :], y[train]; config)
-predictions = predict(model, X[test, :])
-test_accuracy = accuracy(model, X[test, :], y[test])
+y_pred = predict(model, X[test, :])
+score = accuracy(model, X[test, :], y[test])
+
+println(model)
+println("test accuracy = ", score)
 ```
 
-`algorithm=:mhdeoct` is the default. Use `backend=:auto` to select the GPU when
-CUDA is functional and otherwise fall back to the CPU. The `horizon` parameter
-controls subtree depth for MH-DEOCT and is not used by full-tree DEOCT.
-Features are min-max scaled by default, and the fitted scaling parameters are
-stored in `MHDEOCTModel`. Prediction runs on the CPU for models trained by
-either backend. GPU training diagnostics are quiet by default; set
-`verbose=true` to print kernel configuration, timing, and optimization progress.
+GPU diagnostics are quiet by default. Set `verbose=true` to print kernel
+configuration, timing, and optimization progress. Selecting `backend=:gpu`
+never silently falls back to the CPU.
 
-The complete CPU/GPU example is in [`examples/iris.jl`](examples/iris.jl):
+To inspect CUDA.jl directly for troubleshooting, add and import it explicitly:
 
-```shell
-julia +1.12 --project=. examples/iris.jl
+```julia
+using Pkg
+Pkg.add("CUDA")
+using CUDA
+CUDA.versioninfo()
 ```
 
-## Testing
+This is optional and is not required for normal MHDETrees.jl GPU training.
 
-Run the API and both Iris CPU algorithm tests on any machine:
+## Main configuration options
 
-```shell
-julia +1.12 --project=. -e 'using Pkg; Pkg.test()'
-```
-
-On macOS, run the following commands in Terminal from the package directory:
-
-```shell
-juliaup add 1.12
-julia +1.12 --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
-MHDETREES_RUN_GPU_TESTS=false julia +1.12 --project=. -e 'using Pkg; Pkg.test()'
-julia +1.12 --project=. examples/iris.jl
-```
-
-The macOS example automatically skips the CUDA configurations and runs
-DEOCT/CPU and MH-DEOCT/CPU.
-
-On Windows PowerShell with an NVIDIA GPU, first verify CUDA.jl and then enable
-both GPU algorithm tests:
-
-```powershell
-$env:CUDA_VISIBLE_DEVICES = "0"
-$env:MHDETREES_RUN_GPU_TESTS = "true"
-julia +1.12 --project=. -e 'using CUDA; CUDA.versioninfo(); @assert CUDA.functional()'
-julia +1.12 --project=. -e 'using Pkg; Pkg.test()'
-julia +1.12 --project=. examples/iris.jl
-```
-
-## Repository layout
-
-- `src/MHDETrees.jl`: package entry point.
-- `src/api.jl`: configuration, model, and public API.
-- `src/cpu_backend.jl`: CPU full-tree and moving-horizon implementations.
-- `src/gpu/`: CUDA full-tree and moving-horizon implementations.
-- `src/cart/`: adapted DecisionTree.jl code used for CART warm starts.
-- `test/`: API plus Iris CPU/GPU tests.
-- `examples/iris.jl`: one end-to-end dataset example.
-- `docs/`: Documenter.jl source.
-
-The adaptation under `src/cart/` adds the misclassification-error objective
-used at the deepest moving-horizon layer. Its upstream attribution and license,
-along with the provenance of the bundled Iris data, are recorded in
-[`THIRD_PARTY_NOTICE.md`](THIRD_PARTY_NOTICE.md).
-
-## Documentation
-
-Build the local documentation with:
-
-```shell
-julia +1.12 --project=docs -e \
-  'using Pkg; Pkg.develop(path=pwd()); Pkg.instantiate(); include("docs/make.jl")'
-```
+| Option | Default | Description |
+|---|---:|---|
+| `depth` | `2` | Maximum tree depth. |
+| `horizon` | `2` | Subtree depth for MH-DEOCT; must be between `1` and `depth`. |
+| `population_size` | `100` | Differential-evolution population size. |
+| `generations` | `600` | Number of differential-evolution generations. |
+| `min_samples_leaf` | `1` | Minimum requested number of samples in a nonempty leaf. |
+| `alpha` | `0.0` | Penalty per active branch node in the training objective. |
+| `initialization` | `:cart` | Initialization strategy: `:cart`, `:de`, or `:none`. |
+| `seed` | `1` | Random seed. |
+| `scale_features` | `true` | Min-max scale features before training. |
+| `verbose` | `false` | Print GPU training diagnostics. |
 
 ## Citation
 
-Please cite the accompanying paper when using this software:
+If MHDETrees.jl contributes to your work, please cite the accompanying paper:
 
 > Jiayang Ren, Valentín Osuna-Enciso, and Yankai Cao, “A Moving-Horizon
 > Differential Evolution Algorithm for Training Deep Classification Trees on
 > Large Datasets,” *Expert Systems with Applications*, 133846, 2026.
 > [doi:10.1016/j.eswa.2026.133846](https://doi.org/10.1016/j.eswa.2026.133846)
 
-Machine-readable software and article metadata are provided in
+Machine-readable citation metadata are provided in
 [`CITATION.cff`](CITATION.cff).
 
 ## License

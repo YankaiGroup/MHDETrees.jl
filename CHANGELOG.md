@@ -2,6 +2,11 @@
 
 All notable changes to MHDETrees.jl will be documented in this file.
 
+## 1.0.1 - 2026-08-08
+
+- Rewrite the README as a user-facing installation and usage guide.
+- Clarify automatic CUDA.jl installation and NVIDIA GPU training.
+
 ## 1.0.0 - 2026-08-04
 
 - Publish the package under the `MHDETrees` name and MIT license.
