@@ -1,5 +1,7 @@
 # MHDETrees.jl
 
+[![DOI](https://zenodo.org/badge/1323497859.svg)](https://doi.org/10.5281/zenodo.21854170)
+
 [MHDETrees.jl](https://platform.juliahub.com/ui/Packages/General/MHDETrees) trains
 fixed-depth classification trees with differential evolution. It provides the
 Moving-Horizon Differential Evolution algorithm for Optimal Classification
