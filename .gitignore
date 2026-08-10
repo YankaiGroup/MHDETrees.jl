@@ -1,5 +1,6 @@
 data/*
 !data/iris.csv
+!data/yacht_hydrodynamics.data
 data.7z
 .julia/
 .juliaup/

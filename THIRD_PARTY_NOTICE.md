@@ -31,3 +31,16 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## UCI Yacht Hydrodynamics
+
+The bundled `data/yacht_hydrodynamics.data` file is the Yacht Hydrodynamics
+dataset by J. Gerritsma, R. Onnink, and A. Versluis (1981), obtained from the
+UCI Machine Learning Repository:
+
+https://doi.org/10.24432/C5XG7R
+
+The dataset is licensed under the Creative Commons Attribution 4.0
+International license (CC BY 4.0):
+
+https://creativecommons.org/licenses/by/4.0/
