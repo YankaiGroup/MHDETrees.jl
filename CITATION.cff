@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If you use MHDETrees.jl, please cite the accompanying paper and this software."
 title: "MHDETrees.jl"
 type: software
-version: 1.0.1
-doi: "10.5281/zenodo.21854171"
+version: 1.1.0
+doi: "10.5281/zenodo.21854170"
 license: MIT
 repository-code: "https://github.com/YankaiGroup/MHDETrees.jl"
 authors:
@@ -16,6 +16,7 @@ authors:
 keywords:
   - decision tree
   - classification
+  - regression
   - scalability
   - optimization
   - GPU

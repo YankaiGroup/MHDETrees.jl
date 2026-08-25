@@ -2,7 +2,7 @@
 
 All notable changes to MHDETrees.jl will be documented in this file.
 
-## Unreleased
+## 1.1.0 - 2026-08-23
 
 - Add regression support for DEOCT and MH-DEOCT on CPU and CUDA backends.
 - Minimize within-leaf squared error and predict mean training targets at

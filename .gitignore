@@ -7,6 +7,7 @@ data.7z
 Manifest.toml
 LocalPreferences.toml
 docs/build/
+benchmark/
 revised_paper/
 reference/
 *.cov
