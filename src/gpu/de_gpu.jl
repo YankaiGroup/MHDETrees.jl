@@ -155,10 +155,15 @@ function layer_by_layer_original_warmStart(fun_args, tree_da, P, K, X_d, X, Y, Y
     original_sorted_X = deepcopy(fun_args[14])
 
     xbest_1 = zeros(1, size_branch*var_number) # puerly layerbylayer, [size_branch*a, size_branch*b, ...]
+    # Complete trees are scored on the full training set on the GPU (same result as
+    # OCT(..., 2, ...) on the CPU), using the full-data arguments passed in fun_args.
+    full_args = fun_args
+    full_counts = xinit === nothing ? nothing : errors_accumulator(full_args)
+    full_errors(candidate) = OCT_errors_gpu(candidate, full_args, full_counts)
     if xinit !== nothing
         xbest_3 = deepcopy(xinit) # substitude xinit, [size_branch*a, size_branch*b, ...]
         xbest_3_best = deepcopy(xinit) # substitude xinit, [size_branch*a, size_branch*b, ...]
-        fitness_3_best = OCT(tree_da, xbest_3_best, X, Y_K, classes, tree_size, Nmin, 2, 0.05, original_splits)
+        fitness_3_best = full_errors(xbest_3_best)
         verbose && println("fitness_xinit: ", fitness_3_best)
     end
     xbest = zeros(1, size_branch*var_number)
@@ -186,7 +191,7 @@ function layer_by_layer_original_warmStart(fun_args, tree_da, P, K, X_d, X, Y, Y
                     for j in 1:var_number
                         xbest_3[i+(j-1)*size_branch] = xbest_i[floor(Int32,tree_size_i/2)*(j-1)+1]
                     end
-                    fitness_3 = OCT(tree_da, xbest_3, X, Y_K, classes, tree_size, Nmin, 2, 0.05, original_splits)
+                    fitness_3 = full_errors(xbest_3)
                     if fitness_3 < fitness_3_best
                         xbest_3_best = deepcopy(xbest_3)
                         verbose && println("fitness3: ", fitness_3, ", fitness3_best: ", fitness_3_best, ", select xbest_3")
@@ -205,9 +210,9 @@ function layer_by_layer_original_warmStart(fun_args, tree_da, P, K, X_d, X, Y, Y
     @timeit get_timer("Shared") "final selection" begin
         # select best x from xbest_1, xbest_2, xbest_3 and xinit
         if xinit !== nothing
-            fitness_1 = OCT(tree_da, xbest_1, X, Y_K, classes, tree_size, Nmin, 2, 0.05, original_splits)
-            fitness_3 = OCT(tree_da, xbest_3_best, X, Y_K, classes, tree_size, Nmin, 2, 0.05, original_splits)
-            fitness_init = OCT(tree_da, xinit, X, Y_K, classes, tree_size, Nmin, 2, 0.05, original_splits)
+            fitness_1 = full_errors(xbest_1)
+            fitness_3 = full_errors(xbest_3_best)
+            fitness_init = full_errors(xinit)
             fitnesses = [fitness_1, fitness_3, fitness_init]
             verbose && println("fitnesses: ", fitnesses)
             xbests = [xbest_1, xbest_3_best, xinit]

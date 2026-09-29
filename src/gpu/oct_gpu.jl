@@ -5,6 +5,8 @@ using CUDA
 
 
 export OCT_gpu,
+       OCT_errors_gpu,
+       errors_accumulator,
        OCT_regression_gpu,
        OCT_test,
        get_UB,
@@ -544,6 +546,30 @@ function OCT_gpu(candidates, tree_da, X_d, Y_d, num_classes, tree_size, Nmin, ke
         end # end of @timeit get_timer("Shared") "cpu"
     end # end of @timeit get_timer("Shared") "class cost"
     return octCosts_d, results, decoded_ab
+end
+
+# Class-count accumulator for scoring a single complete tree with OCT_errors_gpu.
+function errors_accumulator(fun_args)
+    n = size(fun_args[2], 1)
+    threads = min(n, fun_args[8][1])
+    blocks = Int(cld(n/fun_args[11], threads))
+    return CUDA.zeros(Float32, threads*blocks, ceil(Int, fun_args[5]/2), fun_args[4])
+end
+
+# GPU equivalent of OCT(..., whatReturn=2) on the data in fun_args: the number of
+# misclassified training samples of one complete tree. The candidate is decoded on
+# the CPU exactly as in OCT, and leaf class counts are reduced in Float64.
+function OCT_errors_gpu(candidate, fun_args, z_d)
+    X_d, Y_d, tree_size = fun_args[2], fun_args[3], fun_args[5]
+    n, p = size(X_d)
+    size_branch = floor(Int, tree_size/2)
+    a, b, d = trans_params_azd(vec(copy(candidate)), p, size_branch, fun_args[13])
+    threads = min(n, fun_args[8][1])
+    blocks = Int(cld(n/fun_args[11], threads))
+    b_d = CuArray(reshape(Float32.(b), 1, size_branch))
+    fun_args[7][1](z_d, X_d, CuArray(a), b_d, CuArray(d), 1, Y_d, fun_args[11]; threads, blocks)
+    counts = dropdims(Array(sum(Float64, z_d; dims=1)); dims=1) # SL*K
+    return round(Int, sum(sum(counts, dims=2) - maximum(counts, dims=2)))
 end
 
 function OCT_regression_gpu(candidates, arguments)
