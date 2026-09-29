@@ -2,6 +2,13 @@
 
 All notable changes to MHDETrees.jl will be documented in this file.
 
+## 1.1.1 - 2026-09-29
+
+- Score complete trees on the GPU during MH-DEOCT subtree selection instead of
+  on a single CPU core. Trained trees are unchanged; a depth-8 run on 8.25
+  million HIGGS samples drops from 4.05 h to 1.19 h on an H100-2g.20gb MIG
+  instance.
+
 ## 1.1.0 - 2026-08-23
 
 - Add regression support for DEOCT and MH-DEOCT on CPU and CUDA backends.
