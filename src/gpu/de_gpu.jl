@@ -37,7 +37,7 @@ function DEb1b_warmStart(fun_args, tree_da, DE_iters, X, Y, tree_size, var_numbe
         cart_start = time()
         # Initializing population
         if ws_flag
-            @timeit get_timer("Shared") "warm_start_DT"  DT_warmstart, cart_model = warmstart_gpu.warm_start_DT(X, Y, tree_da,var_number, Nmin, tree_depth, 0.0, fun_args[14])
+            @timeit get_timer("Shared") "warm_start_DT"  DT_warmstart, cart_model = warmstart_gpu.warm_start_DT(X, Y, tree_da,var_number, Nmin, tree_depth, 0.0, fun_args[14]; gpu=true)
             cart_time = time()-cart_start
         else # warm start disabled
             DT_warmstart = zeros(0, state_size)
