@@ -15,13 +15,9 @@ const util = DecisionTree_modified.treeclassifier.util
 
 export SortedColumns, build_tree_gpu
 
-"""
-    SortedColumns(X_d)
-
-Training data on the GPU together with each column's sort order (the sample indices
-that sort the column with `isless`). The CART warm start and `oct_gpu.split_x` use the
-orders, so each column of a node's data is sorted once.
-"""
+# Training data on the GPU together with each column's sort order (the sample indices
+# that sort the column with `isless`). The CART warm start and `oct_gpu.split_x` use
+# the orders, so each column of a node's data is sorted once.
 struct SortedColumns{T,M<:CuMatrix{T}}
     X::M
     order::CuMatrix{Int32}
@@ -241,13 +237,10 @@ function grow(X_d, Y_d, order, features, depth, list, max_depth, min_samples_lea
     return Node{typeof(threshold),eltype(list)}(best_feature, threshold, left_node, right_node)
 end
 
-"""
-    build_tree_gpu(labels, features, max_depth, min_samples_leaf; rng)
-
-`features` is a host matrix or a `SortedColumns`. Same tree as `DecisionTree_modified.build_tree(labels, features, 0, max_depth,
-min_samples_leaf)` (entropy loss, all features), with the split search on the GPU.
-Leaves carry their majority label but no sample labels.
-"""
+# build_tree_gpu(labels, features, max_depth, min_samples_leaf; rng): the same tree as
+# DecisionTree_modified.build_tree(labels, features, 0, max_depth, min_samples_leaf)
+# (entropy loss, all features), with the split search on the GPU. `features` is a host
+# matrix or a SortedColumns. Leaves carry their majority label but no sample labels.
 function build_tree_gpu(labels::AbstractVector, features::SortedColumns, max_depth, min_samples_leaf;
                         rng=Random.GLOBAL_RNG)
     p = size(features, 2)
