@@ -1,19 +1,29 @@
 module warmstart_gpu
 using ..DecisionTree_modified
+using ..cart_gpu
 using StatsBase
 using Random
 
 export warm_start_DT, warm_start_DT_params, encode_b
+
+# Fit the CART warm start on the GPU (cart_gpu.build_tree_gpu); set to false to fit
+# it on the CPU with DecisionTree_modified.build_tree.
+const GPU_CART = Ref(true)
 
 # warm start of Decision Tree (CART)
 function warm_start_DT(X, y,tree_da, var_number, Nmin, D = 4, prune_val=0.0, sorted_X=nothing, loss_flag=0)
     n,p = size(X)
     Tb = 2^D-1
     T = 2^(D+1)-1
-    if loss_flag == 0
-        cart_model = DecisionTree_modified.build_tree(y, X, 0, D, Nmin)
+    if loss_flag == 0 && GPU_CART[]
+        cart_model = cart_gpu.build_tree_gpu(y, X, D, Nmin)
     else
-        cart_model = DecisionTree_modified.build_tree(y, X, 0, D, Nmin, loss=DecisionTree_modified.util.normal_loss)
+        X_host = X isa SortedColumns ? Array(X.X) : X
+        if loss_flag == 0
+            cart_model = DecisionTree_modified.build_tree(y, X_host, 0, D, Nmin)
+        else
+            cart_model = DecisionTree_modified.build_tree(y, X_host, 0, D, Nmin, loss=DecisionTree_modified.util.normal_loss)
+        end
     end
     a,b,c,d = warm_start_DT_params(zeros(p,Tb), zeros(Tb), zeros(T), zeros(Tb), 1, cart_model.node, 2^D:T)
 

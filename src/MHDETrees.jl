@@ -8,6 +8,7 @@ module MHDETrees
 
 include("cart/DecisionTree_modified.jl")
 
+include("gpu/cart_gpu.jl")
 include("gpu/oct_gpu.jl")
 include("gpu/warmstart_gpu.jl")
 include("gpu/de_gpu.jl")

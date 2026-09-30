@@ -43,6 +43,112 @@ using Random
     end
 end
 
+@testset "Shared-memory classification leaf counts" begin
+    oct_gpu = MHDETrees.oct_gpu
+    kernels, threads = oct_gpu.gpu_init(false)
+    Random.seed!(7)
+    for (n, p, classes, depth, population) in ((5_000, 6, 3, 3, 10), (777, 4, 7, 2, 20))
+        size_branch, size_leaves = 2^depth - 1, 2^depth
+        X = CuArray(rand(Float32, n, p))
+        Y = CuArray(rand(Int32(1):Int32(classes), n))
+        a = falses(p, size_branch * population)
+        for j in axes(a, 2)
+            rand() < 0.9 && (a[rand(1:p), j] = true)
+        end
+        d = sum(a, dims=1) .> 0
+        d[rand(1:length(d), 3)] .= false
+        a_d = CuArray(a)
+        b_d = CuArray(rand(Float32, 1, size_branch * population))
+        d_d = CuArray(d)
+
+        stride = 7
+        block_threads = min(n, threads[1])
+        rows = cld(cld(n, stride), block_threads) * block_threads
+        per_thread = CUDA.zeros(Float32, rows, size_leaves * population, classes)
+        oct_gpu.leaf_counts!(per_thread, kernels, threads, X, a_d, b_d, d_d, population, Y, stride)
+        shared = CUDA.zeros(Float32, 1, size_leaves * population, classes)
+        launch = oct_gpu.shared_count_launch(kernels[3], n, length(shared))
+        oct_gpu.leaf_counts!(shared, kernels, threads, X, a_d, b_d, d_d, population, Y, launch)
+        @test Array(shared) == Array(sum(per_thread, dims=1))
+        @test sum(Array(shared)) == n * population
+    end
+end
+
+same_cart_tree(a::MHDETrees.DecisionTree_modified.Leaf, b::MHDETrees.DecisionTree_modified.Leaf) =
+    a.majority == b.majority
+same_cart_tree(a::MHDETrees.DecisionTree_modified.Node, b::MHDETrees.DecisionTree_modified.Node) =
+    a.featid == b.featid && a.featval == b.featval &&
+    same_cart_tree(a.left, b.left) && same_cart_tree(a.right, b.right)
+same_cart_tree(a, b) = false
+
+@testset "GPU CART matches the CPU CART" begin
+    X_iris, y_iris = load_iris()
+    Random.seed!(11)
+    X_ties = round.(rand(2_000, 5); digits=1)
+    y_ties = rand(1:3, 2_000)
+    for (X, y, depth, min_samples_leaf, seed) in (
+        (X_iris, y_iris, 3, 1, 1),
+        (X_iris, y_iris, 8, 5, 2),
+        (X_ties, y_ties, 4, 1, 3),
+        (X_ties, y_ties, 6, 20, 4),
+    )
+        Random.seed!(seed)
+        cpu = MHDETrees.DecisionTree_modified.build_tree(y, X, 0, depth, min_samples_leaf)
+        cpu_next = rand(UInt64)
+        Random.seed!(seed)
+        gpu = MHDETrees.cart_gpu.build_tree_gpu(y, X, depth, min_samples_leaf)
+        @test same_cart_tree(cpu.node, gpu.node)
+        @test rand(UInt64) == cpu_next # same draws from the global RNG
+    end
+end
+
+@testset "GPU split_x matches the CPU split_x" begin
+    Random.seed!(12)
+    X = round.(rand(3_000, 4); digits=2)
+    X[1, 1] = -0.0 # unique() keeps -0.0 and 0.0 apart
+    X[2, 1] = 0.0
+    cpu = MHDETrees.oct_gpu.split_x(X)
+    gpu = MHDETrees.oct_gpu.split_x(MHDETrees.cart_gpu.SortedColumns(CuArray(X)))
+    @test all(isequal.(cpu[1], gpu[1]))
+    @test all(isequal.(cpu[2], gpu[2]))
+    @test typeof.(gpu[2]) == typeof.(cpu[2])
+end
+
+@testset "GPU fits are unchanged by shared-memory counts, the GPU CART and GPU node data" begin
+    X, y = load_iris()
+    function set_gpu_options(shared, gpu_cart, gpu_node_data)
+        MHDETrees.oct_gpu.SHARED_COUNTS[] = shared
+        MHDETrees.warmstart_gpu.GPU_CART[] = gpu_cart
+        MHDETrees.de_gpu.GPU_NODE_DATA[] = gpu_node_data
+    end
+    for algorithm in (:deoct, :mhdeoct)
+        config = MHDEOCTConfig(
+            algorithm=algorithm,
+            backend=:gpu,
+            depth=3,
+            horizon=2,
+            population_size=10,
+            generations=3,
+            initialization=:cart,
+            seed=1,
+        )
+        models = try
+            options = ((false, false, false), (true, false, false), (true, true, false),
+                       (true, false, true), (true, true, true))
+            map(options) do option
+                set_gpu_options(option...)
+                fit(X, y; config)
+            end
+        finally
+            set_gpu_options(true, true, true)
+        end
+        for model in models[2:end]
+            @test model.candidate == models[1].candidate
+            @test model.training_errors == models[1].training_errors
+        end
+    end
+end
+
 @testset "Float32 regression GPU fitness parity" begin
     X, y = load_yacht()
     X = X[1:64, :]

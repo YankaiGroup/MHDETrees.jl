@@ -2,6 +2,25 @@
 
 All notable changes to MHDETrees.jl will be documented in this file.
 
+## Unreleased
+
+- Accumulate classification leaf counts per GPU block in shared memory instead
+  of in a per-thread buffer that is summed after every fitness evaluation.
+  Trained trees are unchanged, and the per-thread buffer and the sum step after
+  each evaluation are gone. Set `MHDETrees.oct_gpu.SHARED_COUNTS[] = false` to
+  use the previous kernel.
+- Fit the CART warm start of the GPU backend on the GPU. The split search runs
+  on the GPU and the random draws are replayed on the CPU, so warm-start trees
+  and trained trees are unchanged. Set `MHDETrees.warmstart_gpu.GPU_CART[] =
+  false` to fit it on the CPU.
+- Keep each MH-DEOCT node's training data on the GPU and build its candidate
+  thresholds there, so each column is sorted once and shared with the CART
+  warm start. Set `MHDETrees.de_gpu.GPU_NODE_DATA[] = false` to extract node
+  data and sort thresholds on the CPU.
+- Together these changes cut a depth-8 MH-DEOCT fit on 8.25 million HIGGS
+  samples from 71.5 to 31.5 minutes on an H100-2g.20gb MIG instance, and the
+  fit now also runs on H100-1g.10gb.
+
 ## 1.1.1 - 2026-09-29
 
 - Score complete trees on the GPU during MH-DEOCT subtree selection instead of

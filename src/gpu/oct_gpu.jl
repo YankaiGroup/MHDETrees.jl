@@ -2,6 +2,7 @@ module oct_gpu
 using LinearAlgebra, Random, StatsBase
 using TimerOutputs: @timeit, get_timer
 using CUDA
+using ..cart_gpu: SortedColumns
 
 
 export OCT_gpu,
@@ -18,6 +19,18 @@ export OCT_gpu,
        split_x,
        onehot,
        trans_params_azd
+
+# Classification leaf counts are accumulated per block in shared memory
+# (gpu_counts_shared!) whenever a block's counts fit; set to false to use the
+# per-thread count buffer of gpu_matrix_3! instead.
+const SHARED_COUNTS = Ref(true)
+
+# Launch settings of gpu_counts_shared!, stored in fun_args[11] in place of the
+# number of samples per thread used by gpu_matrix_3!.
+struct SharedCountLaunch
+    threads::Int
+    blocks::Int
+end
 
 # tree_a_with_zeros_discrete
 function trans_params_azd(candidate, p, size_branch, splits)
@@ -110,6 +123,42 @@ function split_x(X)
     return splits, sorted_X
 end
 
+# split_x for data on the GPU: the same host vectors, from the columns' sort orders.
+function split_x(X::SortedColumns)
+    n, p = size(X)
+    splits = []
+    sorted_X = []
+    for i in 1:p
+        sorted = X.X[view(X.order, :, i), i]
+        first_of_value = CUDA.ones(Bool, n) # unique() compares with isequal
+        first_of_value[2:end] .= .!isequal.(view(sorted, 2:n), view(sorted, 1:n-1))
+        cur_splits = [0; Array(sorted[first_of_value])]
+        push!(sorted_X, cur_splits)
+        cur_splits = [(cur_splits[i] + cur_splits[i+1]) / 2 for i in 1:length(cur_splits)-1]
+        push!(splits, cur_splits)
+    end
+
+    return splits, sorted_X
+end
+
+# Launch settings of gpu_counts_shared! for count buffers of up to `bins` Int32
+# counts per block: one block of the occupancy-optimal size per resident slot.
+function shared_count_launch(kernel, n, bins)
+    config = launch_configuration(kernel.fun; shmem=bins*sizeof(Int32))
+    return SharedCountLaunch(config.threads, min(config.blocks, cld(n, config.threads)))
+end
+
+# (count buffer, launch settings, candidates per launch) for gpu_counts_shared!, using
+# the largest divisor of NP whose leaf class counts fit in one block's shared memory;
+# nothing when even one candidate does not fit.
+function shared_count_setup(kernel, n, size_leaves, num_classes, NP)
+    max_bins = attribute(device(), CUDA.DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK) ÷ sizeof(Int32)
+    NP_stride = findlast(s -> NP % s == 0 && size_leaves*s*num_classes <= max_bins, 1:Int(NP))
+    NP_stride === nothing && return nothing
+    launch = shared_count_launch(kernel, n, size_leaves*NP_stride*num_classes)
+    return CUDA.zeros(Float32, 1, size_leaves*NP_stride, num_classes), launch, Int32(NP_stride)
+end
+
 # julia test_gpu/test_warmstart_LayerOriginal.jl 63 63 2 OCT_az 0 1 2 0 0 0 50
 function args_pre(num_classes, tree_da, X, X_cpu, Y, tree_size, Nmin, kernels, threadss, NP=1, alpha=0.0, verbose=false)
     fun_args = []
@@ -123,7 +172,7 @@ function args_pre(num_classes, tree_da, X, X_cpu, Y, tree_size, Nmin, kernels, t
     push!(fun_args, num_classes) # 4
     push!(fun_args, tree_size) # 5
     push!(fun_args, Nmin) # 6
-    push!(fun_args, kernels) # 7, [gpu_matrix_3!, _get_data_gpu!]
+    push!(fun_args, kernels) # 7, [gpu_matrix_3!, _get_data_gpu!, gpu_counts_shared!]
     push!(fun_args, threadss) # 8
     verbose && println("threadss: ", threadss)
     push!(fun_args, alpha) # 9
@@ -131,47 +180,54 @@ function args_pre(num_classes, tree_da, X, X_cpu, Y, tree_size, Nmin, kernels, t
     n = size(X, 1)
     threads = threadss[1]
     size_leaves = ceil(Int32, tree_size/2)
-    stride = floor(Int32, n/(threads*108)) # A100 has 108 SMs
-    if stride < 1
-        stride = 1
-    elseif stride > 100
-        stride = 100
-    end
-    verbose && println("stride: ", stride)
-    blocks = Int(cld(n/stride, threads))
-    # 20GB memory limit -> 20*1024*1024*1024bits
-    if size_leaves > 128
-        z_d_size_limit = 10*8000000000 # 5*8000000000  # 20*8000000000 
+    shared = SHARED_COUNTS[] && length(kernels) >= 3 ?
+        shared_count_setup(kernels[3], n, size_leaves, num_classes, NP) : nothing
+    if shared === nothing
+        stride = floor(Int32, n/(threads*108)) # A100 has 108 SMs
+        if stride < 1
+            stride = 1
+        elseif stride > 100
+            stride = 100
+        end
+        verbose && println("stride: ", stride)
+        blocks = Int(cld(n/stride, threads))
+        # 20GB memory limit -> 20*1024*1024*1024bits
+        if size_leaves > 128
+            z_d_size_limit = 10*8000000000 # 5*8000000000  # 20*8000000000 
+        else
+            z_d_size_limit = 20*8000000000 # 5*8000000000  # 20*8000000000 
+        end
+        NP_stride = floor(Int32, z_d_size_limit/(threads*blocks*size_leaves*num_classes*32*2))*2
+        verbose && println("block size: ", blocks)
+        verbose && println("dataset size n:", n)
+        verbose && println("NP_stride before check: ", NP_stride)
+        if NP_stride < 1
+            NP_stride = 1
+        elseif NP_stride >= NP
+            NP_stride = NP
+        else 
+            # NPs: all the integers that can divide NP
+            NPs = [i for i in 1:NP if NP%i==0]
+            # NP_stride -> nearest integer smaller than NP_stride in NPs
+            NP_stride = findfirst(NP_stride.<NPs)
+            NP_stride = NPs[NP_stride-1]
+        end
+        verbose && println("NP_stride after check: ", NP_stride)
+        if size_leaves > 128
+            verbose && CUDA.memory_status()
+            z_d = nothing # D8P7,P8,  huge
+            @timeit get_timer("Shared") "gc" GC.gc(true) # D8P7,P8, huge
+            verbose && println(" ")
+            verbose && CUDA.memory_status()
+            verbose && println(" ")
+        end
+        z_d = CUDA.zeros(Float32, threads*blocks, size_leaves*NP_stride, num_classes)
     else
-        z_d_size_limit = 20*8000000000 # 5*8000000000  # 20*8000000000 
+        z_d, stride, NP_stride = shared
+        verbose && println("shared counts: ", stride, ", NP_stride: ", NP_stride)
     end
-    NP_stride = floor(Int32, z_d_size_limit/(threads*blocks*size_leaves*num_classes*32*2))*2
-    verbose && println("block size: ", blocks)
-    verbose && println("dataset size n:", n)
-    verbose && println("NP_stride before check: ", NP_stride)
-    if NP_stride < 1
-        NP_stride = 1
-    elseif NP_stride >= NP
-        NP_stride = NP
-    else 
-        # NPs: all the integers that can divide NP
-        NPs = [i for i in 1:NP if NP%i==0]
-        # NP_stride -> nearest integer smaller than NP_stride in NPs
-        NP_stride = findfirst(NP_stride.<NPs)
-        NP_stride = NPs[NP_stride-1]
-    end
-    verbose && println("NP_stride after check: ", NP_stride)
-    if size_leaves > 128
-        verbose && CUDA.memory_status()
-        z_d = nothing # D8P7,P8,  huge
-        @timeit get_timer("Shared") "gc" GC.gc(true) # D8P7,P8, huge
-        verbose && println(" ")
-        verbose && CUDA.memory_status()
-        verbose && println(" ")
-    end
-    z_d = CUDA.zeros(Float32, threads*blocks, size_leaves*NP_stride, num_classes)
     push!(fun_args, z_d) # 10
-    push!(fun_args, stride) # 11
+    push!(fun_args, stride) # 11, samples per thread or a SharedCountLaunch
     push!(fun_args, NP_stride) # 12
     @timeit get_timer("Shared") "split_x" splits, sorted_X = split_x(X_cpu)
     push!(fun_args, splits) # 13
@@ -223,7 +279,14 @@ function gpu_init(verbose=false)
     kernel5(selected, X_d, a_d, vec(b_d), d_d, ancesters, n, size_ancs; threads, blocks)
     verbose && println("config5.threads: ", config5.threads, ", config5.blocks: ", config5.blocks)
 
-    kernels = [kernel4, kernel5]
+    # gpu_counts_shared!(counts_d, X_d, a_d, b_d, d_d, NP, Y, size_leaves)
+    counts_d = CUDA.zeros(Float32, 1, size_leaves, num_classes)
+    kernel6 = @cuda launch=false gpu_counts_shared!(counts_d, X_d, a_d, b_d, d_d, 1, Y, Int(size_leaves))
+    launch6 = shared_count_launch(kernel6, n, length(counts_d))
+    kernel6(counts_d, X_d, a_d, b_d, d_d, 1, Y, Int(size_leaves); threads=launch6.threads, blocks=launch6.blocks, shmem=length(counts_d)*sizeof(Int32))
+    verbose && println("shared counts launch: ", launch6)
+
+    kernels = [kernel4, kernel5, kernel6]
     threadss = [threads4, threads5]
 
     verbose && println("gpu_init time: ", time()-start)
@@ -305,6 +368,57 @@ function gpu_matrix_3!(z_d, X_d, a_d, b_d, d_d, NP, Y, stride)
             end # end for s
         end # end for np
     end # end if index <= n_d
+end
+
+# Leaf class counts of NP candidate trees, accumulated per block in shared memory.
+# Thread i takes samples i, i+R, i+2R, ... (R = number of threads in the grid), sends
+# each sample through all NP trees exactly as gpu_matrix_3! does, and each block adds
+# its counts to counts_d[1, leaf, class], which the caller zeroes. The launch needs
+# shmem = length(counts_d)*sizeof(Int32).
+function gpu_counts_shared!(counts_d, X_d, a_d, b_d, d_d, NP, Y, size_leaves)
+    bins = size_leaves*NP
+    num_counts = bins*size(counts_d, 3)
+    hist = CuDynamicSharedArray(Int32, num_counts)
+    tid = threadIdx().x
+    for j in tid:blockDim().x:num_counts
+        @inbounds hist[j] = Int32(0)
+    end
+    sync_threads()
+    n_d, p_d = size(X_d)
+    size_branch = size_leaves - 1
+    s = (blockIdx().x - 1) * blockDim().x + tid
+    step = gridDim().x * blockDim().x
+    while s <= n_d
+        @inbounds y = Y[s]
+        for np = 1:NP
+            np_offset = (np-1)*size_branch
+            t = 1
+            while t <= size_branch
+                node = np_offset + t
+                right = true # inactive node, or no feature selected: go right
+                @inbounds if d_d[node]
+                    for i = 1:p_d
+                        if a_d[i, node]
+                            right = !(X_d[s, i] < b_d[1, node])
+                            break
+                        end
+                    end
+                end
+                t = right ? t*2+1 : t*2
+            end
+            CUDA.@atomic hist[(np-1)*size_leaves + t - size_branch + (y-1)*bins] += Int32(1)
+        end
+        s += step
+    end
+    sync_threads()
+    for j in tid:blockDim().x:num_counts
+        @inbounds count = hist[j]
+        if count != Int32(0)
+            class, leaf = divrem(j-1, bins)
+            CUDA.@atomic counts_d[1, leaf+1, class+1] += Float32(count)
+        end
+    end
+    return
 end
 
 function gpu_regression_stats!(
@@ -497,6 +611,22 @@ function regression_args_pre(
     )
 end
 
+# Leaf class counts of the NP candidates in a_d/b_d/d_d, left in z_d and summed over
+# its first dimension by the caller. `stride` is the number of samples per thread of
+# gpu_matrix_3! or the SharedCountLaunch of gpu_counts_shared!.
+function leaf_counts!(z_d, kernels, threadss, X_d, a_d, b_d, d_d, NP, Y_d, stride::Integer)
+    n = size(X_d, 1)
+    threads = min(n, threadss[1])
+    blocks = Int(cld(n/stride, threads))
+    kernels[1](z_d, X_d, a_d, b_d, d_d, NP, Y_d, stride; threads, blocks)
+end
+
+function leaf_counts!(z_d, kernels, threadss, X_d, a_d, b_d, d_d, NP, Y_d, launch::SharedCountLaunch)
+    fill!(z_d, 0)
+    kernels[3](z_d, X_d, a_d, b_d, d_d, Int(NP), Y_d, size(z_d, 2) ÷ Int(NP);
+               threads=launch.threads, blocks=launch.blocks, shmem=length(z_d)*sizeof(Int32))
+end
+
 # gpu fitness function
 function OCT_gpu(candidates, tree_da, X_d, Y_d, num_classes, tree_size, Nmin, kernels, threadss, alpha=0.0, z_d=nothing, stride=1, NP_stride=1, splits=nothing)
     # TREE STRUCTURE: ################################################################
@@ -511,19 +641,17 @@ function OCT_gpu(candidates, tree_da, X_d, Y_d, num_classes, tree_size, Nmin, ke
 
     @timeit get_timer("Shared") "class cost" begin
         NCT = []
-        threads = min(n, threadss[1])
-        blocks = Int(cld(n/stride, threads))
         for np in 1:ceil(Int32, NP/NP_stride) # assume NP is multiple of NP_stride
             a_d = as_d[:, (np-1)*size_branch*NP_stride+1:min(np*size_branch*NP_stride, size(as_d,2))] # P * SB*NP_stride
             b_d = bs_d[:, (np-1)*size_branch*NP_stride+1:min(np*size_branch*NP_stride, size(bs_d,2))] # 1 * SB*NP_stride
             d_d = ds_d[:, (np-1)*size_branch*NP_stride+1:min(np*size_branch*NP_stride, size(ds_d,2))] # 1 * SB*NP_stride
             @timeit get_timer("Shared") "gpu" begin
                 @timeit get_timer("Shared") "matmul+sample" begin
-                    kernels[1](z_d, X_d, a_d, b_d, d_d, NP_stride, Y_d, stride; threads, blocks)
+                    leaf_counts!(z_d, kernels, threadss, X_d, a_d, b_d, d_d, NP_stride, Y_d, stride)
                     CUDA.synchronize()
                 end
                 @timeit get_timer("Shared") "sum" begin
-                    Nct = sum(z_d, dims=1)[1,:,:] # 1*(SL*NP_stride)*k, Int64 -> SL*K
+                    Nct = size(z_d, 1) == 1 ? z_d[1,:,:] : sum(z_d, dims=1)[1,:,:] # 1*(SL*NP_stride)*k, Int64 -> SL*K
                     CUDA.synchronize()
                 end
                 @timeit get_timer("Shared") "NCT" begin
@@ -550,6 +678,7 @@ end
 
 # Class-count accumulator for scoring a single complete tree with OCT_errors_gpu.
 function errors_accumulator(fun_args)
+    fun_args[11] isa SharedCountLaunch && return CUDA.zeros(Float32, 1, ceil(Int, fun_args[5]/2), fun_args[4])
     n = size(fun_args[2], 1)
     threads = min(n, fun_args[8][1])
     blocks = Int(cld(n/fun_args[11], threads))
@@ -561,13 +690,11 @@ end
 # the CPU exactly as in OCT, and leaf class counts are reduced in Float64.
 function OCT_errors_gpu(candidate, fun_args, z_d)
     X_d, Y_d, tree_size = fun_args[2], fun_args[3], fun_args[5]
-    n, p = size(X_d)
+    p = size(X_d, 2)
     size_branch = floor(Int, tree_size/2)
     a, b, d = trans_params_azd(vec(copy(candidate)), p, size_branch, fun_args[13])
-    threads = min(n, fun_args[8][1])
-    blocks = Int(cld(n/fun_args[11], threads))
     b_d = CuArray(reshape(Float32.(b), 1, size_branch))
-    fun_args[7][1](z_d, X_d, CuArray(a), b_d, CuArray(d), 1, Y_d, fun_args[11]; threads, blocks)
+    leaf_counts!(z_d, fun_args[7], fun_args[8], X_d, CuArray(a), b_d, CuArray(d), 1, Y_d, fun_args[11])
     counts = dropdims(Array(sum(Float64, z_d; dims=1)); dims=1) # SL*K
     return round(Int, sum(sum(counts, dims=2) - maximum(counts, dims=2)))
 end

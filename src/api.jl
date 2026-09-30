@@ -234,13 +234,16 @@ function _prepare_gpu_backend(X_train, y_encoded, class_count, config)
     variables_per_branch = 2
     population_size = Int32(config.population_size)
     X_device = CuArray(Float32.(X_train))
+    # Training data for split_x and the CART warm starts: on the GPU with sorted
+    # columns, or the host matrix.
+    X_split = de_gpu.GPU_NODE_DATA[] ? cart_gpu.SortedColumns(CuArray(X_train)) : X_train
 
     kernels, threads = oct_gpu.gpu_init(config.verbose)
     arguments = oct_gpu.args_pre(
         class_count,
         tree_encoding,
         X_device,
-        X_train,
+        X_split,
         y_encoded,
         tree_size,
         config.min_samples_leaf,
@@ -257,6 +260,7 @@ function _prepare_gpu_backend(X_train, y_encoded, class_count, config)
         variables_per_branch=variables_per_branch,
         population_size=population_size,
         X_device=X_device,
+        X_split=X_split,
         arguments=arguments,
     )
 end
@@ -300,7 +304,7 @@ function _fit_deoct_gpu_backend(X_train, y_encoded, y_indicator, class_count, co
         context.arguments,
         context.tree_encoding,
         config.generations,
-        X_train,
+        context.X_split,
         y_encoded,
         context.tree_size,
         context.variables_per_branch,
@@ -335,7 +339,7 @@ function _fit_mhdeoct_gpu_backend(X_train, y_encoded, y_indicator, class_count, 
             context.arguments,
             context.tree_encoding,
             config.generations,
-            X_train,
+            context.X_split,
             y_encoded,
             context.tree_size,
             context.variables_per_branch,
@@ -359,7 +363,7 @@ function _fit_mhdeoct_gpu_backend(X_train, y_encoded, y_indicator, class_count, 
         config.horizon,
         config.generations,
         context.X_device,
-        X_train,
+        context.X_split,
         y_encoded,
         y_indicator,
         context.tree_size,

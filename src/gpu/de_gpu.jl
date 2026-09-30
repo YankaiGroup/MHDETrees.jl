@@ -5,8 +5,14 @@ using CUDA
 
 # Internal sibling modules provided by the MHDETrees package.
 using ..warmstart_gpu, ..oct_gpu
+using ..cart_gpu: SortedColumns
 
 export DEb1b_warmStart, layer_by_layer_original_warmStart
+
+# Keep each MH-DEOCT node's data on the GPU (get_data_device) and build its candidate
+# thresholds there (oct_gpu.split_x); set to false to extract the node data and sort
+# the thresholds on the CPU.
+const GPU_NODE_DATA = Ref(true)
 
 
 function DEb1b_warmStart(fun_args, tree_da, DE_iters, X, Y, tree_size, var_number, Nmin, Np::Int32=20,F=0.8,Cr=0.7, imprimir=0, xinits=nothing, seed=nothing, ws_flag=true, init_flag=0, verbose=false)
@@ -171,7 +177,12 @@ function layer_by_layer_original_warmStart(fun_args, tree_da, P, K, X_d, X, Y, Y
 
     for i in 1:ceil(Int, size_branch)
         P_i = tree_depth - floor(Int32, log2(i)) >= P ? P : tree_depth - floor(Int32, log2(i))
-        @timeit get_timer("Shared") "get_data" X_i, Y_i = get_data_gpu(X, Y, X_d, i, xbest, size_branch, fun_args[7][2], fun_args[8][2], tree_da, original_splits)
+        if X isa SortedColumns
+            @timeit get_timer("Shared") "get_data" X_fit, X_i, Y_i = get_data_device(X, Y, X_d, i, xbest, size_branch, fun_args[7][2], fun_args[8][2], tree_da, original_splits)
+        else
+            @timeit get_timer("Shared") "get_data" X_i, Y_i = get_data_gpu(X, Y, X_d, i, xbest, size_branch, fun_args[7][2], fun_args[8][2], tree_da, original_splits)
+            X_fit = X_i
+        end
         tree_size_i = 2^(P_i+1) - 1
 
         if xinit !== nothing
@@ -180,7 +191,7 @@ function layer_by_layer_original_warmStart(fun_args, tree_da, P, K, X_d, X, Y, Y
         end
         if size(Y_i,1) > Nmin && length(unique(Y_i)) > 1
             verbose && println("### node number: ", i, ", Predicted depth: ", P_i, ", Dataset size: ", length(Y_i), " ###")
-            @timeit get_timer("Shared") "args_pre" fun_args = args_pre(class_labels, fun_args[1], X_i, X_i, Y_i, tree_size_i, fun_args[6], fun_args[7], fun_args[8], Np, fun_args[9], verbose)
+            @timeit get_timer("Shared") "args_pre" fun_args = args_pre(class_labels, fun_args[1], X_fit, X_i, Y_i, tree_size_i, fun_args[6], fun_args[7], fun_args[8], Np, fun_args[9], verbose)
             xbest_i, cart_model, DT_warmstart,  = DEb1b_warmStart(fun_args, tree_da, K, X_i, Y_i, tree_size_i, var_number, Nmin, Np, F, Cr, imprimir, xinits, seed, ws_flag, 0, verbose)
             xbest_i = encode_xbest_i(xbest_i, length(original_sorted_X), floor(Int, tree_size_i/2), fun_args[13], original_sorted_X)
             @timeit get_timer("Shared") "selection" begin
@@ -238,20 +249,32 @@ function encode_xbest_i(xbest_i, p, size_branch, cur_splits, original_sorted_X)
 end
 
 # tree_da - 1: tree_d; 2: tree_a; 3: tree_a_with_zero
-function get_data_gpu(X, Y, X_d, i, xbest, size_branch, kernel, threads, tree_da=1, splits=nothing) #i=5
+# Samples of the training data that reach node i of the tree xbest (a CuVector{Bool}).
+function node_samples(X_d, i, xbest, size_branch, kernel, threads, splits)
     # [floor(i/2), floor(i/4), ..., 1]
     ancesters = [floor(Int32, i/2^j) for j in floor(Int32, log2(i)):-1:0] # [1,2,5]
     # println("node ", i, ":", ancesters)
     size_ancs = length(ancesters) # 3
-    n, p = size(X) 
+    n, p = size(X_d)
     a, b, d = trans_params_azd(xbest, p, size_branch, splits)
     selected = cu(trues(n))
     threads = min(n, threads)
     blocks = ceil(Int32, n/threads)
     kernel(selected, X_d, CuArray(a), CuArray(Float32.(b)), CuArray(d), CuArray(ancesters), n, size_ancs; threads, blocks) # _get_data_gpu
-    selected = Array(selected)
+    return selected
+end
 
+function get_data_gpu(X, Y, X_d, i, xbest, size_branch, kernel, threads, tree_da=1, splits=nothing) #i=5
+    selected = Array(node_samples(X_d, i, xbest, size_branch, kernel, threads, splits))
     return X[selected, :], Y[selected]
+end
+
+# get_data_gpu with the node's data kept on the GPU: the Float32 rows for the fitness
+# kernels, the rows of X.X with their sort orders, and the host labels.
+function get_data_device(X::SortedColumns, Y, X_d, i, xbest, size_branch, kernel, threads, tree_da=1, splits=nothing)
+    rows = findall(node_samples(X_d, i, xbest, size_branch, kernel, threads, splits))
+    length(rows) == size(X_d, 1) && return X_d, X, copy(Y) # the root node: all samples, no copies
+    return X_d[rows, :], SortedColumns(X.X[rows, :]), Y[Array(rows)]
 end
 
 function get_child_index(branch_index, p_i)
