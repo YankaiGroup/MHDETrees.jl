@@ -2,7 +2,7 @@
 
 All notable changes to MHDETrees.jl will be documented in this file.
 
-## Unreleased
+## 1.2.0 - 2026-10-08
 
 - Accumulate classification leaf counts per GPU block in shared memory instead
   of in a per-thread buffer that is summed after every fitness evaluation.
